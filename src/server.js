@@ -12,16 +12,18 @@ const PUBLIC_DIR = join(ROOT, 'public');
 const PORT = Number(process.env.PORT || 10000);
 const APP_TOKEN = process.env.APP_TOKEN || '';
 
-const JSON_LIMIT_BYTES = 64 * 1024;
+const JSON_LIMIT_BYTES = 128 * 1024;
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || 20000);
-const FFPROBE_TIMEOUT_MS = Number(process.env.FFPROBE_TIMEOUT_MS || 30000);
+const FFPROBE_TIMEOUT_MS = Number(process.env.FFPROBE_TIMEOUT_MS || 35000);
 const FFPROBE_ANALYZE_US = String(Number(process.env.FFPROBE_ANALYZE_US || 10000000));
 const FFPROBE_PROBESIZE_BYTES = String(Number(process.env.FFPROBE_PROBESIZE_BYTES || 10000000));
 const FFPROBE_RW_TIMEOUT_US = String(Number(process.env.FFPROBE_RW_TIMEOUT_US || 15000000));
-const MEDIA_USER_AGENT = process.env.MEDIA_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 XtreamMediaInspector/1.1';
+const MEDIA_USER_AGENT = process.env.MEDIA_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 XtreamMediaInspector/1.2';
 const MEDIA_REFERER = process.env.MEDIA_REFERER || '';
 const MEDIA_ORIGIN = process.env.MEDIA_ORIGIN || '';
-const INSPECT_FALLBACK_EXTENSIONS = String(process.env.INSPECT_FALLBACK_EXTENSIONS || 'mkv,mp4,avi,ts,m3u8').split(',').map(x => x.trim().replace(/^\./, '')).filter(Boolean);
+const MOVIE_FALLBACK_EXTENSIONS = csv(process.env.MOVIE_FALLBACK_EXTENSIONS || 'mkv,mp4,avi,ts,m3u8');
+const SERIES_FALLBACK_EXTENSIONS = csv(process.env.SERIES_FALLBACK_EXTENSIONS || 'mkv,mp4,avi,ts,m3u8');
+const LIVE_FALLBACK_EXTENSIONS = csv(process.env.LIVE_FALLBACK_EXTENSIONS || 'm3u8,ts');
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -32,6 +34,19 @@ const CONTENT_TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon'
 };
+
+const TYPE_LABELS = {
+  movie: 'Filme/VOD',
+  series: 'Série',
+  live: 'Live TV'
+};
+
+function csv(value) {
+  return String(value || '')
+    .split(',')
+    .map(x => x.trim().replace(/^\./, ''))
+    .filter(Boolean);
+}
 
 function sendJson(res, statusCode, data) {
   const body = JSON.stringify(data, null, 2);
@@ -69,29 +84,16 @@ function makeXtreamApiUrl(baseUrl, username, password, params = {}) {
   return url;
 }
 
+function normalizeContentType(type) {
+  const t = String(type || 'movie').toLowerCase().trim();
+  if (['movie', 'vod', 'movies', 'filme', 'filmes'].includes(t)) return 'movie';
+  if (['series', 'serie', 'série', 'seriado'].includes(t)) return 'series';
+  if (['live', 'livetv', 'live_tv', 'tv', 'canais', 'channel', 'channels'].includes(t)) return 'live';
+  throw new Error(`Tipo de conteúdo inválido: ${type}`);
+}
+
 function getExtensionFromItem(item) {
-  return String(item?.container_extension || item?.containerExtension || item?.ext || '').replace(/^\./, '').trim();
-}
-
-function buildMovieUrl(baseUrl, username, password, streamId, extension = 'mp4') {
-  if (!streamId) throw new Error('streamId é obrigatório.');
-  const cleanExt = String(extension || '').replace(/^\./, '').trim();
-  const safeStreamId = String(streamId).trim();
-  const suffix = cleanExt ? `.${encodeURIComponent(cleanExt)}` : '';
-  return `${normalizeBaseUrl(baseUrl)}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(safeStreamId)}${suffix}`;
-}
-
-function uniqueValues(values) {
-  const seen = new Set();
-  const out = [];
-  for (const value of values) {
-    const clean = String(value || '').replace(/^\./, '').trim();
-    const key = clean.toLowerCase();
-    if (!clean || seen.has(key)) continue;
-    seen.add(key);
-    out.push(clean);
-  }
-  return out;
+  return String(item?.container_extension || item?.containerExtension || item?.extension || item?.ext || '').replace(/^\./, '').trim();
 }
 
 function getExtensionFromVodInfo(info) {
@@ -99,6 +101,52 @@ function getExtensionFromVodInfo(info) {
     || getExtensionFromItem(info?.info)
     || getExtensionFromItem(info?.movie)
     || getExtensionFromItem(info);
+}
+
+function getExtensionFromEpisode(episode) {
+  return getExtensionFromItem(episode)
+    || getExtensionFromItem(episode?.info)
+    || getExtensionFromItem(episode?.episode_data);
+}
+
+function makeMediaUrl(baseUrl, username, password, kind, id, extension = '') {
+  if (!id) throw new Error('ID da mídia é obrigatório.');
+  const cleanKind = normalizeContentType(kind);
+  const pathKind = cleanKind === 'movie' ? 'movie' : cleanKind === 'series' ? 'series' : 'live';
+  const cleanExt = String(extension || '').replace(/^\./, '').trim();
+  const suffix = cleanExt ? `.${encodeURIComponent(cleanExt)}` : '';
+  return `${normalizeBaseUrl(baseUrl)}/${pathKind}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(String(id).trim())}${suffix}`;
+}
+
+function makeGenericStreamUrl(baseUrl, username, password, id, extension = '') {
+  const cleanExt = String(extension || '').replace(/^\./, '').trim();
+  const suffix = cleanExt ? `.${encodeURIComponent(cleanExt)}` : '';
+  return `${normalizeBaseUrl(baseUrl)}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(String(id).trim())}${suffix}`;
+}
+
+function uniqueValues(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const clean = String(value ?? '').replace(/^\./, '').trim();
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function uniqueCandidates(candidates) {
+  const seen = new Set();
+  const out = [];
+  for (const candidate of candidates) {
+    const key = candidate.url;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(candidate);
+  }
+  return out;
 }
 
 function redactUrl(rawUrl) {
@@ -109,7 +157,8 @@ function redactUrl(rawUrl) {
     url.pathname = url.pathname
       .replace(/\/movie\/[^/]+\/[^/]+\//i, '/movie/***/***/')
       .replace(/\/series\/[^/]+\/[^/]+\//i, '/series/***/***/')
-      .replace(/\/live\/[^/]+\/[^/]+\//i, '/live/***/***/');
+      .replace(/\/live\/[^/]+\/[^/]+\//i, '/live/***/***/')
+      .replace(/^\/([^/]+)\/([^/]+)\//i, '/***/***/');
     return url.toString();
   } catch {
     return '[url inválida]';
@@ -225,13 +274,14 @@ function normalizeText(value) {
 }
 
 function getYear(item) {
-  const direct = item?.year || item?.releaseDate || item?.release_date;
-  const match = String(direct || item?.name || '').match(/\b(19\d{2}|20\d{2})\b/);
+  const direct = item?.year || item?.releaseDate || item?.release_date || item?.releasedate;
+  const match = String(direct || item?.name || item?.title || '').match(/\b(19\d{2}|20\d{2})\b/);
   return match ? match[1] : '';
 }
 
-function trimVodItem(item) {
+function trimMovieItem(item) {
   return {
+    type: 'movie',
     streamId: item.stream_id ?? item.streamId ?? item.id,
     name: item.name || item.title || '',
     year: getYear(item),
@@ -239,17 +289,50 @@ function trimVodItem(item) {
     containerExtension: getExtensionFromItem(item),
     rating: item.rating || '',
     added: item.added || '',
-    streamIcon: item.stream_icon || item.cover || ''
+    icon: item.stream_icon || item.cover || ''
   };
 }
 
-function filterResults(items, query, limit = 50) {
+function trimSeriesItem(item) {
+  return {
+    type: 'series',
+    seriesId: item.series_id ?? item.seriesId ?? item.id,
+    name: item.name || item.title || '',
+    year: getYear(item),
+    categoryId: item.category_id ?? item.categoryId ?? '',
+    rating: item.rating || '',
+    added: item.last_modified || item.added || '',
+    icon: item.cover || item.series_icon || item.stream_icon || ''
+  };
+}
+
+function trimLiveItem(item) {
+  return {
+    type: 'live',
+    streamId: item.stream_id ?? item.streamId ?? item.id,
+    name: item.name || item.title || '',
+    categoryId: item.category_id ?? item.categoryId ?? '',
+    epgChannelId: item.epg_channel_id || '',
+    tvArchive: item.tv_archive || item.tvArchive || '',
+    icon: item.stream_icon || item.cover || '',
+    containerExtension: getExtensionFromItem(item)
+  };
+}
+
+function trimItemByType(item, type) {
+  if (type === 'series') return trimSeriesItem(item);
+  if (type === 'live') return trimLiveItem(item);
+  return trimMovieItem(item);
+}
+
+function filterResults(items, query, limit = 50, type = 'movie') {
   const normalizedQuery = normalizeText(query);
   const words = normalizedQuery.split(' ').filter(Boolean);
+  const cleanType = normalizeContentType(type);
 
   const scored = items.map((item) => {
-    const clean = trimVodItem(item);
-    const searchable = normalizeText(`${clean.name} ${clean.year}`);
+    const clean = trimItemByType(item, cleanType);
+    const searchable = normalizeText(`${clean.name} ${clean.year} ${clean.categoryId} ${clean.epgChannelId || ''}`);
     let score = 0;
     if (!normalizedQuery) score = 1;
     else if (searchable === normalizedQuery) score = 100;
@@ -262,21 +345,77 @@ function filterResults(items, query, limit = 50) {
   return scored
     .filter(x => x.score > 0)
     .sort((a, b) => b.score - a.score || String(a.item.name).localeCompare(String(b.item.name)))
-    .slice(0, Math.max(1, Math.min(Number(limit) || 50, 200)))
+    .slice(0, Math.max(1, Math.min(Number(limit) || 50, 300)))
     .map(x => x.item);
 }
 
-async function getVodStreams({ baseUrl, username, password }) {
-  const url = makeXtreamApiUrl(baseUrl, username, password, { action: 'get_vod_streams' });
+async function getXtreamList({ baseUrl, username, password, type }) {
+  const cleanType = normalizeContentType(type);
+  const action = cleanType === 'series'
+    ? 'get_series'
+    : cleanType === 'live'
+      ? 'get_live_streams'
+      : 'get_vod_streams';
+  const url = makeXtreamApiUrl(baseUrl, username, password, { action });
   const json = await fetchJson(url);
-  if (!Array.isArray(json)) throw new Error('O provider não retornou uma lista de VOD.');
+  if (!Array.isArray(json)) throw new Error(`O provider não retornou uma lista de ${TYPE_LABELS[cleanType]}.`);
   return json;
 }
 
 async function getVodInfo({ baseUrl, username, password, streamId }) {
   const url = makeXtreamApiUrl(baseUrl, username, password, { action: 'get_vod_info', vod_id: streamId });
-  const json = await fetchJson(url);
-  return json;
+  return await fetchJson(url);
+}
+
+async function getSeriesInfo({ baseUrl, username, password, seriesId }) {
+  const url = makeXtreamApiUrl(baseUrl, username, password, { action: 'get_series_info', series_id: seriesId });
+  return await fetchJson(url);
+}
+
+function flattenSeriesEpisodes(seriesInfo) {
+  const episodes = seriesInfo?.episodes || {};
+  const out = [];
+
+  if (Array.isArray(episodes)) {
+    for (const ep of episodes) out.push(normalizeEpisode(ep, ep?.season || ep?.season_number));
+  } else if (episodes && typeof episodes === 'object') {
+    for (const [seasonKey, list] of Object.entries(episodes)) {
+      const season = Number(seasonKey) || seasonKey;
+      if (Array.isArray(list)) {
+        for (const ep of list) out.push(normalizeEpisode(ep, season));
+      }
+    }
+  }
+
+  return out
+    .filter(ep => ep.episodeId)
+    .sort((a, b) => Number(a.season || 0) - Number(b.season || 0) || Number(a.episodeNum || 0) - Number(b.episodeNum || 0) || String(a.name).localeCompare(String(b.name)));
+}
+
+function normalizeEpisode(ep, seasonFallback = '') {
+  const season = ep?.season ?? ep?.season_number ?? ep?.season_num ?? seasonFallback ?? '';
+  const episodeNum = ep?.episode_num ?? ep?.episode_number ?? ep?.episode ?? '';
+  const title = ep?.title || ep?.name || ep?.info?.name || '';
+  const s = String(season || '').padStart(2, '0');
+  const e = String(episodeNum || '').padStart(2, '0');
+  const prefix = season || episodeNum ? `S${s}E${e}` : '';
+  const name = [prefix, title].filter(Boolean).join(' · ');
+
+  return {
+    type: 'series',
+    episodeId: ep?.id ?? ep?.stream_id ?? ep?.streamId ?? ep?.episode_id,
+    name: name || String(ep?.id || ''),
+    title,
+    season,
+    episodeNum,
+    containerExtension: getExtensionFromEpisode(ep),
+    info: {
+      duration: ep?.info?.duration || ep?.info?.duration_secs || '',
+      plot: ep?.info?.plot || '',
+      releasedate: ep?.info?.releasedate || ep?.info?.releaseDate || '',
+      movieImage: ep?.info?.movie_image || ep?.info?.cover_big || ''
+    }
+  };
 }
 
 async function getFinalHttpInfo(rawUrl) {
@@ -290,13 +429,12 @@ async function getFinalHttpInfo(rawUrl) {
   };
 
   async function attempt(method, extraHeaders = {}) {
-    const response = await fetch(rawUrl, {
+    return await fetch(rawUrl, {
       method,
       redirect: 'follow',
       signal: controller.signal,
       headers: { ...headers, ...extraHeaders }
     });
-    return response;
   }
 
   try {
@@ -339,10 +477,7 @@ function ffprobeHeaderString(rawUrl) {
     } catch {}
   }
 
-  if (MEDIA_ORIGIN) {
-    lines.push(`Origin: ${MEDIA_ORIGIN}`);
-  }
-
+  if (MEDIA_ORIGIN) lines.push(`Origin: ${MEDIA_ORIGIN}`);
   return `${lines.join('\r\n')}\r\n`;
 }
 
@@ -379,7 +514,7 @@ function runFfprobe(rawUrl) {
       if (!finished) {
         finished = true;
         child.kill('SIGKILL');
-        const error = new Error('ffprobe excedeu o timeout.');
+        const error = new Error('ffprobe excedeu o timeout. Em LiveTV isso pode indicar stream lento, offline ou que exige outro formato de saída.');
         error.stderr = stderr.slice(0, 2000);
         reject(error);
       }
@@ -399,7 +534,7 @@ function runFfprobe(rawUrl) {
       clearTimeout(timer);
 
       if (code !== 0) {
-        const cleanStderr = stderr.trim().slice(0, 2000);
+        const cleanStderr = stderr.trim().slice(0, 3000);
         const error = new Error(cleanStderr ? `ffprobe falhou com código ${code}: ${cleanStderr}` : `ffprobe falhou com código ${code}.`);
         error.stderr = cleanStderr;
         reject(error);
@@ -501,7 +636,7 @@ function advertisedFlags(name) {
   };
 }
 
-function makeVerdict({ advertisedName, width, height, videoCodec, hdr }) {
+function makeVerdict({ advertisedName, width, height, videoCodec, hdr, type }) {
   const flags = advertisedFlags(advertisedName);
   const lines = [];
 
@@ -527,14 +662,16 @@ function makeVerdict({ advertisedName, width, height, videoCodec, hdr }) {
     lines.push('⚠️ O nome anuncia HEVC/H.265, mas o codec real parece ser outro.');
   }
 
-  if (!lines.length) {
+  if (type === 'live' && !lines.length) {
+    lines.push('ℹ️ LiveTV inspecionada. Para canais ao vivo, bitrate/FPS podem variar e a duração normalmente não aparece.');
+  } else if (!lines.length) {
     lines.push('ℹ️ Sem conflito óbvio entre o nome anunciado e os metadados reais encontrados.');
   }
 
   return lines;
 }
 
-function summarizeProbe(probe, advertisedName = '') {
+function summarizeProbe(probe, advertisedName = '', type = '') {
   const streams = Array.isArray(probe?.streams) ? probe.streams : [];
   const format = probe?.format || {};
   const video = streams.find(s => s.codec_type === 'video') || null;
@@ -555,6 +692,7 @@ function summarizeProbe(probe, advertisedName = '') {
   const hdr = detectHdr(video);
 
   return {
+    contentType: type || '',
     container: format.format_name || '',
     containerLongName: format.format_long_name || '',
     durationSeconds: parseNumber(format.duration),
@@ -587,65 +725,120 @@ function summarizeProbe(probe, advertisedName = '') {
       codec: s.codec_name || '',
       language: s.tags?.language || ''
     })),
-    verdict: makeVerdict({ advertisedName, width, height, videoCodec: video?.codec_name, hdr })
+    verdict: makeVerdict({ advertisedName, width, height, videoCodec: video?.codec_name, hdr, type })
   };
 }
 
 async function handleSearch(req, res) {
   const body = await readJsonBody(req);
   const { baseUrl, username, password, query = '', limit = 50 } = body;
+  const type = normalizeContentType(body.type || body.contentType || 'movie');
   if (!username || !password) throw new Error('username e password são obrigatórios.');
 
-  const items = await getVodStreams({ baseUrl, username, password });
-  const results = filterResults(items, query, limit);
-  sendJson(res, 200, { count: results.length, results });
+  const items = await getXtreamList({ baseUrl, username, password, type });
+  const results = filterResults(items, query, limit, type);
+  sendJson(res, 200, { type, label: TYPE_LABELS[type], count: results.length, results });
+}
+
+async function handleItemInfo(req, res) {
+  const body = await readJsonBody(req);
+  const type = normalizeContentType(body.type || body.contentType || 'movie');
+  const { baseUrl, username, password, streamId, seriesId } = body;
+  if (!username || !password) throw new Error('username e password são obrigatórios.');
+
+  if (type === 'movie') {
+    if (!streamId) throw new Error('streamId é obrigatório para filme/VOD.');
+    const info = await getVodInfo({ baseUrl, username, password, streamId });
+    sendJson(res, 200, { type, raw: info });
+    return;
+  }
+
+  if (type === 'series') {
+    if (!seriesId) throw new Error('seriesId é obrigatório para série.');
+    const info = await getSeriesInfo({ baseUrl, username, password, seriesId });
+    const episodes = flattenSeriesEpisodes(info);
+    sendJson(res, 200, { type, count: episodes.length, episodes, raw: info });
+    return;
+  }
+
+  sendJson(res, 200, {
+    type,
+    message: 'Live TV normalmente não tem um get_info específico no Xtream. Use Inspecionar mídia real para abrir o stream do canal.'
+  });
 }
 
 async function handleVodInfo(req, res) {
   const body = await readJsonBody(req);
   const { baseUrl, username, password, streamId } = body;
   if (!username || !password || !streamId) throw new Error('username, password e streamId são obrigatórios.');
-
   const info = await getVodInfo({ baseUrl, username, password, streamId });
   sendJson(res, 200, info);
 }
 
-async function makeInspectCandidates({ baseUrl, username, password, streamId, extension, mediaUrl }) {
-  if (mediaUrl) {
-    return [{ label: 'URL manual', url: mediaUrl }];
+async function makeInspectCandidates({ type, baseUrl, username, password, streamId, seriesId, episodeId, extension, mediaUrl }) {
+  if (mediaUrl) return [{ label: 'URL manual', url: mediaUrl, type: 'manual' }];
+
+  const cleanType = normalizeContentType(type || 'movie');
+  if (!baseUrl || !username || !password) throw new Error('Informe mediaUrl ou baseUrl + username + password.');
+
+  if (cleanType === 'movie') {
+    if (!streamId) throw new Error('streamId é obrigatório para inspecionar filme/VOD.');
+    let vodInfo = null;
+    try { vodInfo = await getVodInfo({ baseUrl, username, password, streamId }); } catch {}
+    const extensions = uniqueValues([extension, getExtensionFromVodInfo(vodInfo), ...MOVIE_FALLBACK_EXTENSIONS, '']);
+    return uniqueCandidates(extensions.map(ext => ({
+      label: ext ? `Xtream Filme/VOD .${ext}` : 'Xtream Filme/VOD sem extensão',
+      url: makeMediaUrl(baseUrl, username, password, 'movie', streamId, ext),
+      type: cleanType
+    })));
   }
 
-  if (!baseUrl || !username || !password || !streamId) {
-    throw new Error('Informe mediaUrl ou baseUrl + username + password + streamId.');
+  if (cleanType === 'series') {
+    const id = episodeId || streamId;
+    if (!id) throw new Error('episodeId é obrigatório para inspecionar série. Carregue os episódios e selecione um episódio.');
+
+    let episodeExtension = '';
+    if (seriesId) {
+      try {
+        const seriesInfo = await getSeriesInfo({ baseUrl, username, password, seriesId });
+        const ep = flattenSeriesEpisodes(seriesInfo).find(e => String(e.episodeId) === String(id));
+        episodeExtension = ep?.containerExtension || '';
+      } catch {}
+    }
+
+    const extensions = uniqueValues([extension, episodeExtension, ...SERIES_FALLBACK_EXTENSIONS, '']);
+    return uniqueCandidates(extensions.map(ext => ({
+      label: ext ? `Xtream Série/Episódio .${ext}` : 'Xtream Série/Episódio sem extensão',
+      url: makeMediaUrl(baseUrl, username, password, 'series', id, ext),
+      type: cleanType
+    })));
   }
 
-  let vodInfo = null;
-  try {
-    vodInfo = await getVodInfo({ baseUrl, username, password, streamId });
-  } catch {
-    // A inspeção ainda pode funcionar só com o streamId e extensão informada.
+  if (cleanType === 'live') {
+    if (!streamId) throw new Error('streamId é obrigatório para inspecionar Live TV.');
+    const extensions = uniqueValues([extension, ...LIVE_FALLBACK_EXTENSIONS, '']);
+    const candidates = [];
+    for (const ext of extensions) {
+      candidates.push({
+        label: ext ? `Xtream LiveTV /live .${ext}` : 'Xtream LiveTV /live sem extensão',
+        url: makeMediaUrl(baseUrl, username, password, 'live', streamId, ext),
+        type: cleanType
+      });
+    }
+    for (const ext of extensions) {
+      candidates.push({
+        label: ext ? `Xtream LiveTV genérico .${ext}` : 'Xtream LiveTV genérico sem extensão',
+        url: makeGenericStreamUrl(baseUrl, username, password, streamId, ext),
+        type: cleanType
+      });
+    }
+    return uniqueCandidates(candidates);
   }
 
-  const extensions = uniqueValues([
-    extension,
-    getExtensionFromVodInfo(vodInfo),
-    ...INSPECT_FALLBACK_EXTENSIONS
-  ]);
-
-  const candidates = extensions.map(ext => ({
-    label: `Xtream VOD .${ext}`,
-    url: buildMovieUrl(baseUrl, username, password, streamId, ext)
-  }));
-
-  candidates.push({
-    label: 'Xtream VOD sem extensão',
-    url: buildMovieUrl(baseUrl, username, password, streamId, '')
-  });
-
-  return candidates;
+  throw new Error(`Tipo de conteúdo inválido: ${type}`);
 }
 
-async function inspectCandidate(candidate, advertisedName) {
+async function inspectCandidate(candidate) {
   const httpInfo = await getFinalHttpInfo(candidate.url).catch(error => ({ error: error.message }));
   const probe = await runFfprobe(candidate.url);
   return { httpInfo, probe };
@@ -653,16 +846,28 @@ async function inspectCandidate(candidate, advertisedName) {
 
 async function handleInspect(req, res) {
   const body = await readJsonBody(req);
-  const { baseUrl, username, password, streamId, extension, mediaUrl, advertisedName = '' } = body;
+  const {
+    baseUrl,
+    username,
+    password,
+    streamId,
+    seriesId,
+    episodeId,
+    extension,
+    mediaUrl,
+    advertisedName = ''
+  } = body;
+  const type = mediaUrl ? 'manual' : normalizeContentType(body.type || body.contentType || 'movie');
 
-  const candidates = await makeInspectCandidates({ baseUrl, username, password, streamId, extension, mediaUrl });
+  const candidates = await makeInspectCandidates({ type, baseUrl, username, password, streamId, seriesId, episodeId, extension, mediaUrl });
   const attempts = [];
 
   for (const candidate of candidates) {
     try {
-      const { httpInfo, probe } = await inspectCandidate(candidate, advertisedName);
-      const summary = summarizeProbe(probe, advertisedName);
+      const { httpInfo, probe } = await inspectCandidate(candidate);
+      const summary = summarizeProbe(probe, advertisedName, candidate.type || type);
       sendJson(res, 200, {
+        type: candidate.type || type,
         inspectedUrl: redactUrl(candidate.url),
         inspectedCandidate: candidate.label,
         attempts,
@@ -726,11 +931,17 @@ const server = createServer(async (req, res) => {
     }
 
     if (pathname === '/api/health') {
-      return sendJson(res, 200, { ok: true, ffprobe: true, tokenRequired: Boolean(APP_TOKEN) });
+      return sendJson(res, 200, {
+        ok: true,
+        ffprobe: true,
+        tokenRequired: Boolean(APP_TOKEN),
+        supportedTypes: ['movie', 'series', 'live']
+      });
     }
 
     if (pathname === '/api/search' && req.method === 'POST') return await handleSearch(req, res);
-    if (pathname === '/api/vod-info' && req.method === 'POST') return await handleVodInfo(req, res);
+    if (pathname === '/api/item-info' && req.method === 'POST') return await handleItemInfo(req, res);
+    if (pathname === '/api/vod-info' && req.method === 'POST') return await handleVodInfo(req, res); // compatibilidade com versão antiga
     if (pathname === '/api/inspect' && req.method === 'POST') return await handleInspect(req, res);
 
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Endpoint não encontrado.' });

@@ -3,11 +3,13 @@ const els = {
   username: document.querySelector('#username'),
   password: document.querySelector('#password'),
   appToken: document.querySelector('#appToken'),
+  contentType: document.querySelector('#contentType'),
   query: document.querySelector('#query'),
   searchBtn: document.querySelector('#searchBtn'),
   searchStatus: document.querySelector('#searchStatus'),
   results: document.querySelector('#results'),
   selected: document.querySelector('#selected'),
+  episodes: document.querySelector('#episodes'),
   infoBtn: document.querySelector('#infoBtn'),
   inspectBtn: document.querySelector('#inspectBtn'),
   manualUrl: document.querySelector('#manualUrl'),
@@ -17,16 +19,30 @@ const els = {
   rawJson: document.querySelector('#rawJson')
 };
 
+const TYPE_LABELS = {
+  movie: 'Filme/VOD',
+  series: 'Série',
+  live: 'Live TV'
+};
+
 let selectedItem = null;
-let lastVodInfo = null;
+let selectedEpisode = null;
+let lastItemInfo = null;
+let lastResults = [];
 
 restoreSession();
+updatePlaceholders();
 
-els.searchBtn.addEventListener('click', searchMovies);
+els.searchBtn.addEventListener('click', searchContent);
 els.query.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') searchMovies();
+  if (event.key === 'Enter') searchContent();
 });
-els.infoBtn.addEventListener('click', loadVodInfo);
+els.contentType.addEventListener('change', () => {
+  saveSession();
+  clearSelection();
+  updatePlaceholders();
+});
+els.infoBtn.addEventListener('click', loadItemInfo);
 els.inspectBtn.addEventListener('click', inspectSelected);
 els.manualInspectBtn.addEventListener('click', inspectManualUrl);
 
@@ -38,7 +54,8 @@ function saveSession() {
   sessionStorage.setItem('xtream-inspector', JSON.stringify({
     baseUrl: els.baseUrl.value,
     username: els.username.value,
-    appToken: els.appToken.value
+    appToken: els.appToken.value,
+    contentType: els.contentType.value
   }));
 }
 
@@ -48,7 +65,19 @@ function restoreSession() {
     els.baseUrl.value = saved.baseUrl || '';
     els.username.value = saved.username || '';
     els.appToken.value = saved.appToken || '';
+    els.contentType.value = saved.contentType || 'movie';
   } catch {}
+}
+
+function updatePlaceholders() {
+  const type = currentType();
+  if (type === 'movie') els.query.placeholder = 'Ex: Avatar, Matrix, Duna...';
+  if (type === 'series') els.query.placeholder = 'Ex: The Last of Us, Game of Thrones...';
+  if (type === 'live') els.query.placeholder = 'Ex: HBO, Telecine, Globo, ESPN...';
+}
+
+function currentType() {
+  return els.contentType.value || 'movie';
 }
 
 function getCredentials() {
@@ -93,18 +122,36 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function itemId(item) {
+  if (item.type === 'series') return item.seriesId;
+  return item.streamId;
+}
+
 function itemMeta(item) {
-  return [
+  const parts = [
+    TYPE_LABELS[item.type] || item.type,
     item.year ? `Ano ${item.year}` : '',
     item.containerExtension ? `.${item.containerExtension}` : '',
     item.categoryId ? `Categoria ${item.categoryId}` : '',
-    item.streamId ? `ID ${item.streamId}` : ''
-  ].filter(Boolean).join(' · ');
+    item.epgChannelId ? `EPG ${item.epgChannelId}` : '',
+    itemId(item) ? `ID ${itemId(item)}` : ''
+  ];
+  return parts.filter(Boolean).join(' · ');
 }
 
-async function searchMovies() {
+function clearSelection() {
+  selectedItem = null;
+  selectedEpisode = null;
+  lastItemInfo = null;
+  lastResults = [];
+  els.results.innerHTML = '';
+  renderSelected();
+}
+
+async function searchContent() {
   const credentials = getCredentials();
   const query = els.query.value.trim();
+  const type = currentType();
   saveSession();
 
   if (!credentials.baseUrl || !credentials.username || !credentials.password) {
@@ -113,15 +160,17 @@ async function searchMovies() {
   }
 
   selectedItem = null;
-  lastVodInfo = null;
+  selectedEpisode = null;
+  lastItemInfo = null;
   renderSelected();
   els.results.innerHTML = '';
-  setStatus(els.searchStatus, 'Buscando no provider...');
+  setStatus(els.searchStatus, `Buscando ${TYPE_LABELS[type]} no provider...`);
 
   try {
-    const data = await api('/api/search', { ...credentials, query, limit: 80 });
-    setStatus(els.searchStatus, `${data.count} resultado(s) encontrado(s).`, 'ok');
-    renderResults(data.results || []);
+    const data = await api('/api/search', { ...credentials, type, query, limit: 120 });
+    lastResults = data.results || [];
+    setStatus(els.searchStatus, `${data.count} resultado(s) encontrado(s) em ${data.label || TYPE_LABELS[type]}.`, 'ok');
+    renderResults(lastResults);
   } catch (error) {
     setStatus(els.searchStatus, error.message, 'error');
   }
@@ -146,7 +195,8 @@ function renderResults(results) {
   els.results.querySelectorAll('button[data-index]').forEach((button) => {
     button.addEventListener('click', () => {
       selectedItem = results[Number(button.dataset.index)];
-      lastVodInfo = null;
+      selectedEpisode = null;
+      lastItemInfo = null;
       renderSelected();
       window.scrollTo({ top: els.selected.getBoundingClientRect().top + window.scrollY - 24, behavior: 'smooth' });
     });
@@ -155,8 +205,12 @@ function renderResults(results) {
 
 function renderSelected() {
   const enabled = Boolean(selectedItem);
-  els.infoBtn.disabled = !enabled;
-  els.inspectBtn.disabled = !enabled;
+  const type = selectedItem?.type || currentType();
+
+  els.infoBtn.disabled = !enabled || type === 'live';
+  els.inspectBtn.disabled = !enabled || (type === 'series' && !selectedEpisode);
+  els.infoBtn.textContent = type === 'series' ? 'Listar episódios' : type === 'movie' ? 'Consultar VOD info' : 'Live não tem detalhes';
+  els.episodes.innerHTML = '';
 
   if (!selectedItem) {
     els.selected.className = 'selected empty';
@@ -164,44 +218,128 @@ function renderSelected() {
     return;
   }
 
+  const rows = [
+    ['Tipo', TYPE_LABELS[type] || type],
+    ['Nome anunciado', selectedItem.name],
+    [type === 'series' ? 'Series ID' : 'Stream ID', itemId(selectedItem)],
+    ['Extensão', selectedItem.containerExtension || 'não informado'],
+    ['Ano', selectedItem.year || 'não informado'],
+    ['Categoria', selectedItem.categoryId || 'não informado']
+  ];
+
+  if (selectedItem.epgChannelId) rows.push(['EPG Channel ID', selectedItem.epgChannelId]);
+
+  if (selectedEpisode) {
+    rows.push(['Episódio selecionado', selectedEpisode.name]);
+    rows.push(['Episode ID', selectedEpisode.episodeId]);
+    rows.push(['Extensão do episódio', selectedEpisode.containerExtension || 'não informado']);
+  }
+
   els.selected.className = 'selected';
-  els.selected.innerHTML = `
-    <dl class="kv">
-      <dt>Nome anunciado</dt><dd>${escapeHtml(selectedItem.name)}</dd>
-      <dt>Stream ID</dt><dd>${escapeHtml(selectedItem.streamId)}</dd>
-      <dt>Extensão</dt><dd>${escapeHtml(selectedItem.containerExtension || 'não informado')}</dd>
-      <dt>Ano</dt><dd>${escapeHtml(selectedItem.year || 'não informado')}</dd>
-      <dt>Categoria</dt><dd>${escapeHtml(selectedItem.categoryId || 'não informado')}</dd>
-    </dl>
-  `;
+  els.selected.innerHTML = `<dl class="kv">${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}</dl>`;
+
+  if (type === 'series') renderEpisodeHintOrList();
 }
 
-async function loadVodInfo() {
+function renderEpisodeHintOrList() {
+  if (!selectedItem || selectedItem.type !== 'series') return;
+
+  if (!lastItemInfo?.episodes?.length) {
+    els.episodes.innerHTML = '<div class="selected empty">Clique em “Listar episódios” e selecione um episódio para inspecionar. Série usa <strong>episode id</strong>, não o series_id.</div>';
+    return;
+  }
+
+  renderEpisodes(lastItemInfo.episodes);
+}
+
+async function loadItemInfo() {
   if (!selectedItem) return;
-  setStatus(els.inspectStatus, 'Consultando get_vod_info...');
+  const type = selectedItem.type;
+
+  if (type === 'live') {
+    setStatus(els.inspectStatus, 'Live TV não precisa de detalhes. Pode inspecionar direto o stream do canal.', 'ok');
+    return;
+  }
+
+  setStatus(els.inspectStatus, type === 'series' ? 'Consultando get_series_info e listando episódios...' : 'Consultando get_vod_info...');
   els.rawJson.textContent = '{}';
 
   try {
-    lastVodInfo = await api('/api/vod-info', {
+    lastItemInfo = await api('/api/item-info', {
       ...getCredentials(),
-      streamId: selectedItem.streamId
+      type,
+      streamId: selectedItem.streamId,
+      seriesId: selectedItem.seriesId
     });
-    setStatus(els.inspectStatus, 'VOD info carregado.', 'ok');
-    els.rawJson.textContent = JSON.stringify(lastVodInfo, null, 2);
+
+    if (type === 'series') {
+      setStatus(els.inspectStatus, `${lastItemInfo.count || 0} episódio(s) carregado(s). Selecione um episódio.`, 'ok');
+      renderEpisodes(lastItemInfo.episodes || []);
+    } else {
+      setStatus(els.inspectStatus, 'VOD info carregado.', 'ok');
+    }
+
+    els.rawJson.textContent = JSON.stringify(lastItemInfo, null, 2);
   } catch (error) {
     setStatus(els.inspectStatus, error.message, 'error');
   }
 }
 
+function renderEpisodes(episodes) {
+  if (!selectedItem || selectedItem.type !== 'series') return;
+
+  if (!episodes.length) {
+    els.episodes.innerHTML = '<div class="selected empty">Nenhum episódio retornado pelo provider.</div>';
+    return;
+  }
+
+  els.episodes.innerHTML = `
+    <h3>Episódios</h3>
+    <div class="episode-list">
+      ${episodes.map((ep, index) => `
+        <button class="episode-button ${selectedEpisode?.episodeId === ep.episodeId ? 'active' : ''}" data-episode-index="${index}">
+          <span>${escapeHtml(ep.name)}</span>
+          <small>${escapeHtml([ep.containerExtension ? `.${ep.containerExtension}` : '', ep.episodeId ? `ID ${ep.episodeId}` : ''].filter(Boolean).join(' · '))}</small>
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  els.episodes.querySelectorAll('button[data-episode-index]').forEach((button) => {
+    button.addEventListener('click', () => {
+      selectedEpisode = episodes[Number(button.dataset.episodeIndex)];
+      renderSelected();
+      setStatus(els.inspectStatus, `Episódio selecionado: ${selectedEpisode.name}`, 'ok');
+    });
+  });
+}
+
 function extensionForSelected() {
-  return selectedItem?.containerExtension
-    || lastVodInfo?.movie_data?.container_extension
-    || lastVodInfo?.info?.container_extension
-    || 'mp4';
+  if (!selectedItem) return '';
+  if (selectedItem.type === 'series') return selectedEpisode?.containerExtension || '';
+  if (selectedItem.type === 'movie') {
+    return selectedItem.containerExtension
+      || lastItemInfo?.raw?.movie_data?.container_extension
+      || lastItemInfo?.raw?.info?.container_extension
+      || 'mp4';
+  }
+  if (selectedItem.type === 'live') return selectedItem.containerExtension || '';
+  return '';
+}
+
+function advertisedNameForSelected() {
+  if (!selectedItem) return '';
+  if (selectedItem.type === 'series' && selectedEpisode) return `${selectedItem.name} - ${selectedEpisode.name}`;
+  return selectedItem.name;
 }
 
 async function inspectSelected() {
   if (!selectedItem) return;
+  if (selectedItem.type === 'series' && !selectedEpisode) {
+    setStatus(els.inspectStatus, 'Para série, primeiro carregue e selecione um episódio.', 'error');
+    return;
+  }
+
   setStatus(els.inspectStatus, 'Inspecionando mídia com ffprobe...');
   els.summary.className = 'summary empty';
   els.summary.textContent = 'Processando...';
@@ -209,9 +347,12 @@ async function inspectSelected() {
   try {
     const data = await api('/api/inspect', {
       ...getCredentials(),
+      type: selectedItem.type,
       streamId: selectedItem.streamId,
+      seriesId: selectedItem.seriesId,
+      episodeId: selectedEpisode?.episodeId,
       extension: extensionForSelected(),
-      advertisedName: selectedItem.name
+      advertisedName: advertisedNameForSelected()
     });
     renderInspection(data);
   } catch (error) {
@@ -258,6 +399,7 @@ function renderInspection(data) {
   els.rawJson.textContent = JSON.stringify(data, null, 2);
 
   const badges = [
+    TYPE_LABELS[data.type] || data.type,
     video.resolution,
     video.codec ? `Vídeo ${video.codec}${video.profile ? ` / ${video.profile}` : ''}` : '',
     video.fps ? `${video.fps} fps` : '',
@@ -278,6 +420,7 @@ function renderInspection(data) {
 
     <dl class="kv">
       <dt>Nome anunciado</dt><dd>${escapeHtml(data.advertisedName || '')}</dd>
+      <dt>Candidato usado</dt><dd>${escapeHtml(data.inspectedCandidate || '')}</dd>
       <dt>URL inspecionada</dt><dd>${escapeHtml(data.inspectedUrl || '')}</dd>
       <dt>Host final</dt><dd>${escapeHtml(http.finalHost || http.error || 'não identificado')}</dd>
       <dt>HTTP</dt><dd>${escapeHtml(http.status ? `${http.status} · ${http.contentType || ''}` : http.error || '')}</dd>

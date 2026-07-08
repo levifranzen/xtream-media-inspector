@@ -1,13 +1,17 @@
 # Xtream Media Inspector
 
-Ferramenta simples para rodar no Render com Docker.
+Ferramenta simples para rodar no Render com Docker e validar a mídia real de conteúdo Xtream Codes usando `ffprobe`.
 
 Ela permite:
 
-- Buscar filmes em um painel compatível com Xtream Codes (`get_vod_streams`).
-- Selecionar um resultado.
-- Consultar `get_vod_info`.
-- Montar a URL real do VOD.
+- Buscar **Filmes/VOD** via `get_vod_streams`.
+- Buscar **Séries** via `get_series`.
+- Consultar `get_series_info`, listar episódios e inspecionar o **episode id** correto.
+- Buscar **Live TV** via `get_live_streams`.
+- Montar URLs reais nos formatos:
+  - `/movie/user/pass/stream_id.ext`
+  - `/series/user/pass/episode_id.ext`
+  - `/live/user/pass/stream_id.ext`
 - Rodar `ffprobe` na URL da mídia.
 - Retornar resolução real, codec, bitrate, áudio, HDR, container, duração e host final após redirect.
 - Tentar automaticamente extensões alternativas quando a extensão do Xtream vier vazia/errada.
@@ -36,45 +40,103 @@ A página é servida pelo próprio backend Node. A API usa apenas módulos nativ
 
 ### `POST /api/search`
 
-Busca filmes no Xtream.
+Busca conteúdo no Xtream. O campo `type` aceita `movie`, `series` ou `live`.
 
 ```json
 {
   "baseUrl": "http://provider.com:80",
   "username": "usuario",
   "password": "senha",
+  "type": "movie",
   "query": "Avatar",
   "limit": 50
 }
 ```
 
-### `POST /api/vod-info`
+Exemplos de ações usadas por tipo:
 
-Consulta detalhes do VOD.
+```txt
+movie  -> action=get_vod_streams
+series -> action=get_series
+live   -> action=get_live_streams
+```
+
+### `POST /api/item-info`
+
+Consulta detalhes do item selecionado.
+
+Filme/VOD:
 
 ```json
 {
   "baseUrl": "http://provider.com:80",
   "username": "usuario",
   "password": "senha",
+  "type": "movie",
   "streamId": 12345
 }
 ```
+
+Série:
+
+```json
+{
+  "baseUrl": "http://provider.com:80",
+  "username": "usuario",
+  "password": "senha",
+  "type": "series",
+  "seriesId": 999
+}
+```
+
+Para séries, a resposta inclui `episodes`, já normalizado com `episodeId`, temporada, episódio e extensão. Esse `episodeId` é o ID usado na URL `/series/...`, não o `seriesId`.
+
+Live TV normalmente não tem um `get_info` equivalente. A inspeção usa o `streamId` direto do canal.
 
 ### `POST /api/inspect`
 
 Inspeciona a mídia real com `ffprobe`.
 
-Modo Xtream:
+Filme/VOD:
 
 ```json
 {
   "baseUrl": "http://provider.com:80",
   "username": "usuario",
   "password": "senha",
+  "type": "movie",
   "streamId": 12345,
   "extension": "mkv",
   "advertisedName": "Filme X 4K HDR"
+}
+```
+
+Série/episódio:
+
+```json
+{
+  "baseUrl": "http://provider.com:80",
+  "username": "usuario",
+  "password": "senha",
+  "type": "series",
+  "seriesId": 999,
+  "episodeId": 777777,
+  "extension": "mkv",
+  "advertisedName": "Série X - S01E01 4K"
+}
+```
+
+Live TV:
+
+```json
+{
+  "baseUrl": "http://provider.com:80",
+  "username": "usuario",
+  "password": "senha",
+  "type": "live",
+  "streamId": 12345,
+  "extension": "m3u8",
+  "advertisedName": "Canal X FHD"
 }
 ```
 
@@ -82,8 +144,8 @@ Modo URL manual:
 
 ```json
 {
-  "mediaUrl": "http://provider.com/movie/usuario/senha/12345.mkv",
-  "advertisedName": "Filme X 4K HDR"
+  "mediaUrl": "http://provider.com/live/usuario/senha/12345.ts",
+  "advertisedName": "Canal X FHD"
 }
 ```
 
@@ -149,25 +211,26 @@ Variáveis opcionais:
 
 ```bash
 FETCH_TIMEOUT_MS=20000
-FFPROBE_TIMEOUT_MS=30000
+FFPROBE_TIMEOUT_MS=35000
 FFPROBE_ANALYZE_US=10000000
 FFPROBE_PROBESIZE_BYTES=10000000
 FFPROBE_RW_TIMEOUT_US=15000000
 MEDIA_USER_AGENT="Mozilla/5.0 ..."
 MEDIA_REFERER="http://provider.com/"
 MEDIA_ORIGIN="http://provider.com"
-INSPECT_FALLBACK_EXTENSIONS="mkv,mp4,avi,ts,m3u8"
+MOVIE_FALLBACK_EXTENSIONS="mkv,mp4,avi,ts,m3u8"
+SERIES_FALLBACK_EXTENSIONS="mkv,mp4,avi,ts,m3u8"
+LIVE_FALLBACK_EXTENSIONS="m3u8,ts"
 ```
 
-Se aparecer `ffprobe falhou com código 1`, a interface agora mostra no JSON bruto o erro real retornado pelo `ffprobe` e cada URL candidata testada. Em geral, isso revela se foi `403`, `404`, extensão errada, redirect problemático, bloqueio por `User-Agent`, playlist HLS inválida ou timeout.
+Se aparecer `ffprobe falhou com código 1`, a interface mostra no JSON bruto o erro real retornado pelo `ffprobe` e cada URL candidata testada. Em geral, isso revela se foi `403`, `404`, extensão errada, redirect problemático, bloqueio por `User-Agent`, playlist HLS inválida ou timeout.
 
-Para providers lentos, aumente `FFPROBE_TIMEOUT_MS`, `FFPROBE_ANALYZE_US` e `FFPROBE_PROBESIZE_BYTES`.
-
-Para evitar leitura excessiva, mantenha esses valores conservadores.
+Para LiveTV, alguns canais podem demorar mais para entregar dados suficientes ao `ffprobe`. Se necessário, aumente `FFPROBE_TIMEOUT_MS`, `FFPROBE_ANALYZE_US` e `FFPROBE_PROBESIZE_BYTES`.
 
 ## Observações
 
 - A inspeção depende do servidor permitir leitura parcial/streaming suficiente para o `ffprobe`.
-- Alguns HLS/M3U8 podem exigir mais tempo de análise.
+- Séries precisam de seleção de episódio, porque o stream real usa `episodeId`.
+- LiveTV pode não retornar duração/tamanho, porque é transmissão contínua.
 - HDR nem sempre é simples de detectar; a ferramenta procura sinais como `smpte2084`, `arib-std-b67`, `bt2020` e side data de mastering display/content light level.
 - Bitrate pode vir ausente quando o provider não informa ou quando o container não expõe esse metadado facilmente.

@@ -12,7 +12,7 @@
       <div>
         <p class="eyebrow">Xtream Codes · ffprobe · Render</p>
         <h1>Xtream Media Inspector</h1>
-        <p class="lead">Busque um filme no provider, selecione o item e valide a qualidade real da mídia: resolução, codec, bitrate, áudio, HDR e host final.</p>
+        <p class="lead">Busque filmes, séries/episódios ou LiveTV no provider e valide a qualidade real da mídia: resolução, codec, bitrate, áudio, HDR e host final.</p>
       </div>
     </header>
 
@@ -40,9 +40,14 @@
     </section>
 
     <section class="card">
-      <h2>2. Buscar filme</h2>
+      <h2>2. Buscar conteúdo</h2>
       <div class="search-row">
-        <input id="query" placeholder="Ex: Avatar, Matrix, Duna..." />
+        <select id="contentType" aria-label="Tipo de conteúdo">
+          <option value="movie">Filmes / VOD</option>
+          <option value="series">Séries</option>
+          <option value="live">Live TV</option>
+        </select>
+        <input id="query" placeholder="Ex: Avatar, The Last of Us, HBO, Globo..." />
         <button id="searchBtn">Buscar</button>
       </div>
       <div id="searchStatus" class="status"></div>
@@ -52,8 +57,9 @@
     <section class="card">
       <h2>3. Item selecionado</h2>
       <div id="selected" class="selected empty">Nenhum item selecionado.</div>
+      <div id="episodes" class="episodes"></div>
       <div class="actions">
-        <button id="infoBtn" disabled>Consultar VOD info</button>
+        <button id="infoBtn" disabled>Consultar detalhes</button>
         <button id="inspectBtn" disabled>Inspecionar mídia real</button>
       </div>
     </section>
@@ -61,7 +67,7 @@
     <section class="card">
       <h2>4. Inspeção manual por URL</h2>
       <p class="hint">Use quando você já tem a URL final da mídia. Não precisa informar user/pass neste modo.</p>
-      <textarea id="manualUrl" rows="3" placeholder="http://provider/movie/user/pass/12345.mkv"></textarea>
+      <textarea id="manualUrl" rows="3" placeholder="http://provider/movie/user/pass/12345.mkv ou http://provider/live/user/pass/12345.ts"></textarea>
       <div class="actions">
         <button id="manualInspectBtn">Inspecionar URL manual</button>
       </div>

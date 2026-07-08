@@ -1,7 +1,7 @@
 {
   "name": "xtream-media-inspector",
-  "version": "1.0.0",
-  "description": "Xtream Codes VOD search and real media inspector using ffprobe.",
+  "version": "1.1.0",
+  "description": "Xtream Codes movie, series and Live TV real media inspector using ffprobe.",
   "type": "module",
   "scripts": {
     "start": "node src/server.js"
