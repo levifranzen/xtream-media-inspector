@@ -18,6 +18,10 @@ const FFPROBE_TIMEOUT_MS = Number(process.env.FFPROBE_TIMEOUT_MS || 30000);
 const FFPROBE_ANALYZE_US = String(Number(process.env.FFPROBE_ANALYZE_US || 10000000));
 const FFPROBE_PROBESIZE_BYTES = String(Number(process.env.FFPROBE_PROBESIZE_BYTES || 10000000));
 const FFPROBE_RW_TIMEOUT_US = String(Number(process.env.FFPROBE_RW_TIMEOUT_US || 15000000));
+const MEDIA_USER_AGENT = process.env.MEDIA_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 XtreamMediaInspector/1.1';
+const MEDIA_REFERER = process.env.MEDIA_REFERER || '';
+const MEDIA_ORIGIN = process.env.MEDIA_ORIGIN || '';
+const INSPECT_FALLBACK_EXTENSIONS = String(process.env.INSPECT_FALLBACK_EXTENSIONS || 'mkv,mp4,avi,ts,m3u8').split(',').map(x => x.trim().replace(/^\./, '')).filter(Boolean);
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -71,9 +75,30 @@ function getExtensionFromItem(item) {
 
 function buildMovieUrl(baseUrl, username, password, streamId, extension = 'mp4') {
   if (!streamId) throw new Error('streamId é obrigatório.');
-  const cleanExt = String(extension || 'mp4').replace(/^\./, '').trim() || 'mp4';
+  const cleanExt = String(extension || '').replace(/^\./, '').trim();
   const safeStreamId = String(streamId).trim();
-  return `${normalizeBaseUrl(baseUrl)}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(safeStreamId)}.${encodeURIComponent(cleanExt)}`;
+  const suffix = cleanExt ? `.${encodeURIComponent(cleanExt)}` : '';
+  return `${normalizeBaseUrl(baseUrl)}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(safeStreamId)}${suffix}`;
+}
+
+function uniqueValues(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const clean = String(value || '').replace(/^\./, '').trim();
+    const key = clean.toLowerCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function getExtensionFromVodInfo(info) {
+  return getExtensionFromItem(info?.movie_data)
+    || getExtensionFromItem(info?.info)
+    || getExtensionFromItem(info?.movie)
+    || getExtensionFromItem(info);
 }
 
 function redactUrl(rawUrl) {
@@ -148,7 +173,7 @@ async function fetchJson(url) {
       signal: controller.signal,
       headers: {
         'accept': 'application/json,text/plain,*/*',
-        'user-agent': 'XtreamMediaInspector/1.0'
+        'user-agent': MEDIA_USER_AGENT
       }
     });
     const text = await response.text();
@@ -260,7 +285,7 @@ async function getFinalHttpInfo(rawUrl) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   const headers = {
-    'user-agent': 'XtreamMediaInspector/1.0',
+    'user-agent': MEDIA_USER_AGENT,
     'accept': '*/*'
   };
 
@@ -299,6 +324,28 @@ async function getFinalHttpInfo(rawUrl) {
   }
 }
 
+function ffprobeHeaderString(rawUrl) {
+  const lines = [
+    'Accept: */*',
+    'Connection: close'
+  ];
+
+  if (MEDIA_REFERER) {
+    lines.push(`Referer: ${MEDIA_REFERER}`);
+  } else {
+    try {
+      const u = new URL(rawUrl);
+      lines.push(`Referer: ${u.origin}/`);
+    } catch {}
+  }
+
+  if (MEDIA_ORIGIN) {
+    lines.push(`Origin: ${MEDIA_ORIGIN}`);
+  }
+
+  return `${lines.join('\r\n')}\r\n`;
+}
+
 function runFfprobe(rawUrl) {
   return new Promise(async (resolve, reject) => {
     try {
@@ -309,10 +356,14 @@ function runFfprobe(rawUrl) {
     }
 
     const args = [
-      '-v', 'quiet',
+      '-v', 'error',
+      '-hide_banner',
+      '-user_agent', MEDIA_USER_AGENT,
+      '-headers', ffprobeHeaderString(rawUrl),
       '-rw_timeout', FFPROBE_RW_TIMEOUT_US,
       '-analyzeduration', FFPROBE_ANALYZE_US,
       '-probesize', FFPROBE_PROBESIZE_BYTES,
+      '-allowed_extensions', 'ALL',
       '-print_format', 'json',
       '-show_format',
       '-show_streams',
@@ -326,8 +377,11 @@ function runFfprobe(rawUrl) {
 
     const timer = setTimeout(() => {
       if (!finished) {
+        finished = true;
         child.kill('SIGKILL');
-        reject(new Error('ffprobe excedeu o timeout.'));
+        const error = new Error('ffprobe excedeu o timeout.');
+        error.stderr = stderr.slice(0, 2000);
+        reject(error);
       }
     }, FFPROBE_TIMEOUT_MS);
 
@@ -345,7 +399,10 @@ function runFfprobe(rawUrl) {
       clearTimeout(timer);
 
       if (code !== 0) {
-        reject(new Error(`ffprobe falhou com código ${code}. ${stderr.slice(0, 500)}`));
+        const cleanStderr = stderr.trim().slice(0, 2000);
+        const error = new Error(cleanStderr ? `ffprobe falhou com código ${code}: ${cleanStderr}` : `ffprobe falhou com código ${code}.`);
+        error.stderr = cleanStderr;
+        reject(error);
         return;
       }
 
@@ -553,31 +610,80 @@ async function handleVodInfo(req, res) {
   sendJson(res, 200, info);
 }
 
+async function makeInspectCandidates({ baseUrl, username, password, streamId, extension, mediaUrl }) {
+  if (mediaUrl) {
+    return [{ label: 'URL manual', url: mediaUrl }];
+  }
+
+  if (!baseUrl || !username || !password || !streamId) {
+    throw new Error('Informe mediaUrl ou baseUrl + username + password + streamId.');
+  }
+
+  let vodInfo = null;
+  try {
+    vodInfo = await getVodInfo({ baseUrl, username, password, streamId });
+  } catch {
+    // A inspeção ainda pode funcionar só com o streamId e extensão informada.
+  }
+
+  const extensions = uniqueValues([
+    extension,
+    getExtensionFromVodInfo(vodInfo),
+    ...INSPECT_FALLBACK_EXTENSIONS
+  ]);
+
+  const candidates = extensions.map(ext => ({
+    label: `Xtream VOD .${ext}`,
+    url: buildMovieUrl(baseUrl, username, password, streamId, ext)
+  }));
+
+  candidates.push({
+    label: 'Xtream VOD sem extensão',
+    url: buildMovieUrl(baseUrl, username, password, streamId, '')
+  });
+
+  return candidates;
+}
+
+async function inspectCandidate(candidate, advertisedName) {
+  const httpInfo = await getFinalHttpInfo(candidate.url).catch(error => ({ error: error.message }));
+  const probe = await runFfprobe(candidate.url);
+  return { httpInfo, probe };
+}
+
 async function handleInspect(req, res) {
   const body = await readJsonBody(req);
   const { baseUrl, username, password, streamId, extension, mediaUrl, advertisedName = '' } = body;
 
-  let targetUrl = mediaUrl;
-  if (!targetUrl) {
-    if (!baseUrl || !username || !password || !streamId) {
-      throw new Error('Informe mediaUrl ou baseUrl + username + password + streamId.');
+  const candidates = await makeInspectCandidates({ baseUrl, username, password, streamId, extension, mediaUrl });
+  const attempts = [];
+
+  for (const candidate of candidates) {
+    try {
+      const { httpInfo, probe } = await inspectCandidate(candidate, advertisedName);
+      const summary = summarizeProbe(probe, advertisedName);
+      sendJson(res, 200, {
+        inspectedUrl: redactUrl(candidate.url),
+        inspectedCandidate: candidate.label,
+        attempts,
+        http: httpInfo,
+        advertisedName,
+        real: summary,
+        rawProbe: probe
+      });
+      return;
+    } catch (error) {
+      attempts.push({
+        candidate: candidate.label,
+        url: redactUrl(candidate.url),
+        error: error.message || 'Falha desconhecida.'
+      });
     }
-    targetUrl = buildMovieUrl(baseUrl, username, password, streamId, extension || 'mp4');
   }
 
-  const [httpInfo, probe] = await Promise.all([
-    getFinalHttpInfo(targetUrl).catch(error => ({ error: error.message })),
-    runFfprobe(targetUrl)
-  ]);
-
-  const summary = summarizeProbe(probe, advertisedName);
-  sendJson(res, 200, {
-    inspectedUrl: redactUrl(targetUrl),
-    http: httpInfo,
-    advertisedName,
-    real: summary,
-    rawProbe: probe
-  });
+  const error = new Error('ffprobe não conseguiu inspecionar a mídia em nenhuma URL candidata. Veja details para o erro real de cada tentativa.');
+  error.details = attempts;
+  throw error;
 }
 
 async function handleStatic(req, res, pathname) {
@@ -630,7 +736,10 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Endpoint não encontrado.' });
     return await handleStatic(req, res, pathname);
   } catch (error) {
-    sendJson(res, 500, { error: error.message || 'Erro interno.' });
+    const payload = { error: error.message || 'Erro interno.' };
+    if (error.details) payload.details = error.details;
+    if (error.stderr) payload.stderr = error.stderr;
+    sendJson(res, 500, payload);
   }
 });
 

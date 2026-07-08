@@ -10,6 +10,8 @@ Ela permite:
 - Montar a URL real do VOD.
 - Rodar `ffprobe` na URL da mídia.
 - Retornar resolução real, codec, bitrate, áudio, HDR, container, duração e host final após redirect.
+- Tentar automaticamente extensões alternativas quando a extensão do Xtream vier vazia/errada.
+- Enviar `User-Agent` também no `ffprobe`, útil para providers que bloqueiam clientes desconhecidos.
 
 > Use apenas com providers e conteúdos que você tem autorização para acessar.
 
@@ -151,7 +153,13 @@ FFPROBE_TIMEOUT_MS=30000
 FFPROBE_ANALYZE_US=10000000
 FFPROBE_PROBESIZE_BYTES=10000000
 FFPROBE_RW_TIMEOUT_US=15000000
+MEDIA_USER_AGENT="Mozilla/5.0 ..."
+MEDIA_REFERER="http://provider.com/"
+MEDIA_ORIGIN="http://provider.com"
+INSPECT_FALLBACK_EXTENSIONS="mkv,mp4,avi,ts,m3u8"
 ```
+
+Se aparecer `ffprobe falhou com código 1`, a interface agora mostra no JSON bruto o erro real retornado pelo `ffprobe` e cada URL candidata testada. Em geral, isso revela se foi `403`, `404`, extensão errada, redirect problemático, bloqueio por `User-Agent`, playlist HLS inválida ou timeout.
 
 Para providers lentos, aumente `FFPROBE_TIMEOUT_MS`, `FFPROBE_ANALYZE_US` e `FFPROBE_PROBESIZE_BYTES`.
 

@@ -70,7 +70,12 @@ async function api(path, payload) {
   });
 
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(data.error || `HTTP ${response.status}`);
+    error.details = data.details;
+    error.stderr = data.stderr;
+    throw error;
+  }
   return data;
 }
 
@@ -212,7 +217,8 @@ async function inspectSelected() {
   } catch (error) {
     setStatus(els.inspectStatus, error.message, 'error');
     els.summary.className = 'summary empty';
-    els.summary.textContent = 'Falha na inspeção.';
+    els.summary.textContent = 'Falha na inspeção. Veja o JSON bruto para o detalhe das tentativas.';
+    els.rawJson.textContent = JSON.stringify({ error: error.message, details: error.details, stderr: error.stderr }, null, 2);
   }
 }
 
@@ -236,7 +242,8 @@ async function inspectManualUrl() {
   } catch (error) {
     setStatus(els.inspectStatus, error.message, 'error');
     els.summary.className = 'summary empty';
-    els.summary.textContent = 'Falha na inspeção.';
+    els.summary.textContent = 'Falha na inspeção. Veja o JSON bruto para o detalhe das tentativas.';
+    els.rawJson.textContent = JSON.stringify({ error: error.message, details: error.details, stderr: error.stderr }, null, 2);
   }
 }
 
