@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Xtream Media Inspector</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Xtream Codes · ffprobe · Render</p>
+        <h1>Xtream Media Inspector</h1>
+        <p class="lead">Busque um filme no provider, selecione o item e valide a qualidade real da mídia: resolução, codec, bitrate, áudio, HDR e host final.</p>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>1. Dados do provider</h2>
+      <div class="grid">
+        <label>
+          URL Xtream
+          <input id="baseUrl" placeholder="http://meu-provider.com:80" autocomplete="off" />
+        </label>
+        <label>
+          Usuário
+          <input id="username" autocomplete="off" />
+        </label>
+        <label>
+          Senha
+          <input id="password" type="password" autocomplete="off" />
+        </label>
+        <label>
+          Token da ferramenta <span class="muted">opcional</span>
+          <input id="appToken" type="password" placeholder="APP_TOKEN, se configurado" autocomplete="off" />
+        </label>
+      </div>
+      <p class="hint">Os dados ficam no navegador para esta sessão. A API mascara credenciais nos retornos.</p>
+    </section>
+
+    <section class="card">
+      <h2>2. Buscar filme</h2>
+      <div class="search-row">
+        <input id="query" placeholder="Ex: Avatar, Matrix, Duna..." />
+        <button id="searchBtn">Buscar</button>
+      </div>
+      <div id="searchStatus" class="status"></div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. Item selecionado</h2>
+      <div id="selected" class="selected empty">Nenhum item selecionado.</div>
+      <div class="actions">
+        <button id="infoBtn" disabled>Consultar VOD info</button>
+        <button id="inspectBtn" disabled>Inspecionar mídia real</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4. Inspeção manual por URL</h2>
+      <p class="hint">Use quando você já tem a URL final da mídia. Não precisa informar user/pass neste modo.</p>
+      <textarea id="manualUrl" rows="3" placeholder="http://provider/movie/user/pass/12345.mkv"></textarea>
+      <div class="actions">
+        <button id="manualInspectBtn">Inspecionar URL manual</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Resultado</h2>
+      <div id="inspectStatus" class="status"></div>
+      <div id="summary" class="summary empty">Nada inspecionado ainda.</div>
+      <details>
+        <summary>JSON bruto</summary>
+        <pre id="rawJson">{}</pre>
+      </details>
+    </section>
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
